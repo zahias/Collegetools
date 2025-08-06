@@ -1,6 +1,6 @@
 # Overview
 
-This is a Streamlit-based academic grade analysis application that processes student grade data. The application focuses on parsing and analyzing grade information from structured datasets, with specialized functionality for interpreting course-semester-year-grade naming conventions. It's designed to handle academic data where grades are stored in columns with specific naming patterns like 'MATH101-Fall2024-A' or 'BIO202-Spring2025-B+'.
+This is a Streamlit-based academic grade analysis application that processes student grade data for the PU PBHL Department. The application transforms wide-format student grade Excel files into tidy, normalized data for academic analysis. It supports two data formats: column-based naming conventions (Course-Semester-Year-Grade) and cell-value formats (Course/Semester-Year/Grade). Successfully tested with PU PBHL data containing formats like 'SPTH201/FALL-2016/F'.
 
 # User Preferences
 
@@ -18,9 +18,11 @@ Preferred communication style: Simple, everyday language.
 - **Modular Parsing Functions**: Separated parsing logic into reusable functions for course, semester, year, and grade extraction
 
 ## Data Structure Design
-- **Column Name Convention**: Expects grade data in 'Course-Semester-Year-Grade' format (e.g., 'MATH101-Fall2024-A')
-- **Flexible Pattern Matching**: Supports multiple delimiter variations (hyphens and underscores)
-- **Grade Format Support**: Handles various grade formats including letter grades with plus/minus modifiers (A+, B-, etc.)
+- **Dual Format Support**: 
+  - Format 1: Column names in 'Course-Semester-Year-Grade' format (e.g., 'MATH101-Fall2024-A')
+  - Format 2: Course columns (COURSE_1, COURSE_2, etc.) with cell values in 'Course/Semester-Year/Grade' format (e.g., 'SPTH201/FALL-2016/F')
+- **Flexible Pattern Matching**: Supports multiple delimiter variations (hyphens, underscores, forward slashes)
+- **Grade Format Support**: Handles various grade formats including letter grades with plus/minus modifiers (A+, B-, etc.), plus special grades (P, R, INCOMPLETE)
 
 ## Error Handling and Validation
 - **Optional Return Types**: Uses Python's typing system with Optional types for robust error handling
