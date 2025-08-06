@@ -1,6 +1,6 @@
 # Overview
 
-This is a Streamlit-based academic grade analysis application that processes student grade data for the PU PBHL Department. The application transforms wide-format student grade Excel files into tidy, normalized data for academic analysis. It supports two data formats: column-based naming conventions (Course-Semester-Year-Grade) and cell-value formats (Course/Semester-Year/Grade). Successfully tested with PU PBHL data containing formats like 'SPTH201/FALL-2016/F'.
+This is a comprehensive Streamlit-based academic data processing toolkit for the PU PBHL Department. The application combines two essential tools in a tabbed interface: a Grade Data Transformer for processing student grade records, and an Internship Data Consolidator for managing student internship completion data. Both tools support the specific data formats used by the department and provide Excel export functionality for downstream analysis.
 
 # User Preferences
 
@@ -9,8 +9,9 @@ Preferred communication style: Simple, everyday language.
 # System Architecture
 
 ## Frontend Architecture
-- **Streamlit Framework**: Uses Streamlit for the web interface, providing an interactive dashboard for grade data analysis
-- **Single-page Application**: Built as a simple SPA with Streamlit's component-based structure
+- **Streamlit Framework**: Uses Streamlit for the web interface with a tabbed multi-tool dashboard
+- **Multi-Tool Application**: Built with tab-based navigation separating grade analysis and internship consolidation
+- **Wide Layout**: Configured for optimal display of data tables and processing results
 
 ## Data Processing Architecture
 - **Pandas-based Data Handling**: Core data manipulation using pandas DataFrames for efficient tabular data processing
@@ -34,9 +35,13 @@ Preferred communication style: Simple, everyday language.
 ## Core Libraries
 - **Streamlit**: Web application framework for creating the interactive interface
 - **Pandas**: Data manipulation and analysis library for handling tabular data
+- **OpenPyXL**: Excel file reading and writing for direct workbook manipulation
 - **Python Standard Library**:
   - `re`: Regular expression module for pattern matching and parsing
   - `io`: Input/output utilities for data handling
+  - `zipfile`: Archive processing for batch file operations
+  - `os`: Operating system interface for file path operations
+  - `tempfile`: Secure temporary file creation and management
   - `typing`: Type hints for better code documentation and IDE support
 
 ## Data Sources
