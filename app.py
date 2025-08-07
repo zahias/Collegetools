@@ -335,8 +335,7 @@ def process_zip_file(uploaded_file) -> Tuple[pd.DataFrame, List[str], List[str]]
                         continue
                     
                     # Add student data to consolidated list
-                    student_record = {'Student_ID': student_id}
-                    student_record.update(internship_data)
+                    student_record = {'Student_ID': student_id, **internship_data}
                     all_student_data.append(student_record)
                     
                     processed_files.append(file_name)
@@ -442,8 +441,7 @@ def grade_transformer_tab():
                 
                 # Create Excel file in memory
                 output = io.BytesIO()
-                with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                    tidy_df.to_excel(writer, sheet_name='Cleaned_Data', index=False)
+                tidy_df.to_excel(output, engine='openpyxl', sheet_name='Cleaned_Data', index=False)
                 
                 output.seek(0)
                 
@@ -563,8 +561,7 @@ def internship_consolidator_tab():
                     
                     # Convert DataFrame to Excel bytes
                     output = io.BytesIO()
-                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                        consolidated_df.to_excel(writer, sheet_name='Consolidated_Report', index=False)
+                    consolidated_df.to_excel(output, engine='openpyxl', sheet_name='Consolidated_Report', index=False)
                     
                     excel_data = output.getvalue()
                     
