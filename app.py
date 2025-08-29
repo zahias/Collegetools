@@ -442,26 +442,14 @@ def process_spth_advising(uploaded_zip) -> Tuple[pd.DataFrame, pd.DataFrame, byt
 
     summary = {course: {"Yes": 0, "Optional": 0, "Not Advised": 0} for course in courses}
     student_yes = {}
-    processed_buffer = BytesIO()
+
 
     with zipfile.ZipFile(uploaded_zip) as zin, zipfile.ZipFile(processed_buffer, 'w') as zout:
         for file_name in zin.namelist():
             if not file_name.lower().endswith(('.xlsx', '.xls')):
                 continue
             with zin.open(file_name) as f:
-                df_raw = pd.read_excel(
-                    f, sheet_name="Current Semester Advising", header=None
-                )
-                df = df_raw.iloc[8:].copy()
-                df.columns = df.iloc[0].astype(str).str.strip()
-                df = df[1:].rename(columns=lambda x: str(x).strip())
-                df = df[["Course Code", "Advised"]]
 
-                # Save cleaned file
-                output = BytesIO()
-                df.to_excel(output, index=False)
-                output.seek(0)
-                zout.writestr(file_name, output.getvalue())
 
                 student_name = os.path.splitext(os.path.basename(file_name))[0]
                 yes_courses = []
