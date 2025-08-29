@@ -7,6 +7,7 @@ import os
 from openpyxl import load_workbook
 import tempfile
 from typing import Dict, List, Tuple, Optional
+from collections import defaultdict
 
 def parse_course_semester_grade_from_column(column_name: str) -> Optional[Tuple[str, str, str, str]]:
     """
@@ -356,6 +357,190 @@ def process_zip_file(uploaded_file) -> Tuple[pd.DataFrame, List[str], List[str]]
     
     return consolidated_df, processed_files, error_files
 
+# ===== ADVISING STATUS EXTRACTOR FUNCTIONS =====
+
+def process_pbhl_advising(uploaded_zip) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Process PBHL advising sheets and return summary and conflict-free groups."""
+
+    summary = defaultdict(lambda: {"Yes": 0, "Optional": 0, "Not Advised": 0})
+    student_yes = {}
+
+    with zipfile.ZipFile(uploaded_zip) as z:
+        for file_name in z.namelist():
+            if not file_name.lower().endswith(('.xlsx', '.xls')):
+                continue
+            with z.open(file_name) as f:
+                df = pd.read_excel(f, sheet_name="Current Semester Advising", header=None)
+                df = df.iloc[7:, [0, 7]]  # Columns: Course Code, Advising Status
+                df.columns = ["Course Code", "Advised"]
+                df = df.dropna(subset=["Course Code"])  # Drop rows without course code
+                df["Advised"] = df["Advised"].fillna("").astype(str).str.strip().str.title()
+
+                # Update summary counts
+                for _, row in df.iterrows():
+                    course = str(row["Course Code"]).strip()
+                    status = row["Advised"] if row["Advised"] in ["Yes", "Optional"] else "Not Advised"
+                    summary[course][status] += 1
+
+                # Collect courses advised as "Yes" for conflict-free groups
+                yes_courses = sorted(df[df["Advised"] == "Yes"]["Course Code"].astype(str).str.strip().tolist())
+                student_name = os.path.splitext(os.path.basename(file_name))[0]
+                student_yes[student_name] = yes_courses
+
+    # Create summary DataFrame
+    summary_df = pd.DataFrame(
+        [
+            {
+                "Course Code": course,
+                "Yes Count": counts["Yes"],
+                "Optional Count": counts["Optional"],
+                "Not Advised Count": counts["Not Advised"],
+            }
+            for course, counts in sorted(summary.items())
+        ]
+    )
+
+    # Create conflict-free groups DataFrame
+    groups = defaultdict(list)
+    for student, courses in student_yes.items():
+        groups[tuple(courses)].append(student)
+
+    max_courses = max((len(k) for k in groups.keys()), default=0)
+    group_rows = []
+    for courses, students in groups.items():
+        row = {"Students": ", ".join(sorted(students))}
+        for i, course in enumerate(courses, start=1):
+            row[f"Course {i}"] = course
+        group_rows.append(row)
+
+    group_df = pd.DataFrame(group_rows)
+    for i in range(1, max_courses + 1):
+        col = f"Course {i}"
+        if col not in group_df.columns:
+            group_df[col] = ""
+    group_df = group_df[["Students"] + [f"Course {i}" for i in range(1, max_courses + 1)]]
+
+    return summary_df, group_df
+
+
+def process_spth_advising(uploaded_zip) -> Tuple[pd.DataFrame, pd.DataFrame, bytes]:
+    """Process SPTH advising sheets: clean files, summarize, and group courses."""
+
+    courses = [
+        "BIOL 201", "BSE-000", "SPTH 205", "SPTH 206", "SPTH 229", "ARAB 201", "BCOM 300",
+        "BIOL 201 or CHEM 201", "CIVL 201", "CIVL 202", "CMPS 202", "COMM 201", "ENGL 201",
+        "ENGL 202", "PSYCH 201", "STAT 201", "SPTH 201", "SPTH 202", "SPTH 204", "SPTH 205N",
+        "SPTH 206N", "SPTH 207", "SPTH 208", "SPTH 209", "SPTH 210", "SPTH 211", "SPTH 212",
+        "SPTH 217", "SPTH 219", "SPTH 224", "SPTH 225", "SPTH 226", "SPTH 227", "SPTH 228",
+        "SPTH 229N", "SPTH 230", "SPTH 231", "SPTH 234", "SPTH 240", "SPTH 240S", "SPTH 241",
+        "SPTH 241S", "SPTH 250", "SPTH 270", "SPTH 271", "SPTH 272", "SPTH 273", "SPTH 274",
+        "SPTH 275", "SPTH 276", "SPTH 277", "SPTH 290", "SPTH 291", "SPTH 292", "SPTH 293A",
+        "SPTH 293B", "SPTH 294A", "SPTH 294B", "SPTH 296A", "SPTH 296B", "SPTH 297A", "SPTH 297B",
+        "SPTH 298A", "SPTH 298B", "SPTH 299A", "SPTH 299B", "INEG 200", "INEG 300", "MATH 101",
+        "MATH 102", "CHEM 101", "BIOL 101", "PHYS 101", "ENGL 101"
+    ]
+
+    summary = {course: {"Yes": 0, "Optional": 0, "Not Advised": 0} for course in courses}
+    student_yes = {}
+    processed_buffer = io.BytesIO()
+
+    with zipfile.ZipFile(uploaded_zip) as zin, zipfile.ZipFile(processed_buffer, 'w') as zout:
+        for file_name in zin.namelist():
+            if not file_name.lower().endswith(('.xlsx', '.xls')):
+                continue
+            with zin.open(file_name) as f:
+                df_raw = pd.read_excel(f, sheet_name="Current Semester Advising", header=None)
+                df = df_raw.iloc[7:]
+                df.columns = df.iloc[0]
+                df = df[1:][["Course Code", "Advised"]]
+
+                # Save cleaned file
+                b = io.BytesIO()
+                df.to_excel(b, index=False)
+                b.seek(0)
+                zout.writestr(file_name, b.getvalue())
+
+                student_name = os.path.splitext(os.path.basename(file_name))[0]
+                yes_courses = []
+
+                for course in courses:
+                    row = df[df["Course Code"] == course]
+                    if row.empty:
+                        status = "Not Advised"
+                    else:
+                        val = str(row["Advised"].iloc[0]).strip().title()
+                        status = val if val in ["Yes", "Optional"] else "Not Advised"
+                    summary[course][status] += 1
+                    if status == "Yes":
+                        yes_courses.append(course)
+
+                student_yes[student_name] = yes_courses
+
+    processed_buffer.seek(0)
+
+    # Summary DataFrame
+    summary_df = pd.DataFrame(
+        [
+            {
+                "Course Code": course,
+                "Yes Count": counts["Yes"],
+                "Optional Count": counts["Optional"],
+                "Not Advised Count": counts["Not Advised"],
+            }
+            for course, counts in summary.items()
+        ]
+    )
+
+    # Conflict-free groups
+    groups = defaultdict(list)
+    for student, courses_taken in student_yes.items():
+        groups[tuple(courses_taken)].append(student)
+
+    max_courses = max((len(k) for k in groups.keys()), default=0)
+    group_rows = []
+    for courses_taken, students in groups.items():
+        row = {"Students": ", ".join(sorted(students))}
+        for i, course in enumerate(courses_taken, start=1):
+            row[f"Course {i}"] = course
+        group_rows.append(row)
+
+    group_df = pd.DataFrame(group_rows)
+    for i in range(1, max_courses + 1):
+        col = f"Course {i}"
+        if col not in group_df.columns:
+            group_df[col] = ""
+    group_df = group_df[["Students"] + [f"Course {i}" for i in range(1, max_courses + 1)]]
+
+    return summary_df, group_df, processed_buffer.getvalue()
+
+
+def advising_status_extractor_tab():
+    """Streamlit interface for the Advising Status Extractor tool."""
+    st.header("🗂 Advising Status Extractor")
+    track = st.selectbox("Select Program", ["PBHL", "SPTH"])
+    uploaded_zip = st.file_uploader("Upload ZIP of advising sheets", type=["zip"])
+
+    if uploaded_zip is None:
+        return
+
+    if track == "PBHL":
+        summary_df, group_df = process_pbhl_advising(uploaded_zip)
+        st.subheader("Advising Summary")
+        st.dataframe(summary_df, use_container_width=True)
+        st.subheader("Conflict-Free Course Groups")
+        st.dataframe(group_df, use_container_width=True)
+    else:
+        summary_df, group_df, processed_zip = process_spth_advising(uploaded_zip)
+        st.download_button(
+            "Download Processed Files",
+            data=processed_zip,
+            file_name="processed_advising_files.zip",
+        )
+        st.subheader("Advising Summary")
+        st.dataframe(summary_df, use_container_width=True)
+        st.subheader("Conflict-Free Course Groups")
+        st.dataframe(group_df, use_container_width=True)
+
 # ===== TAB FUNCTIONS =====
 
 def grade_transformer_tab():
@@ -618,13 +803,20 @@ def main():
     st.markdown("Comprehensive toolkit for processing student academic data")
     
     # Create tabs
-    tab1, tab2 = st.tabs(["📊 Grade Data Transformer", "🎓 Internship Data Consolidator"])
-    
+    tab1, tab2, tab3 = st.tabs([
+        "📊 Grade Data Transformer",
+        "🎓 Internship Data Consolidator",
+        "🗂 Advising Status Extractor",
+    ])
+
     with tab1:
         grade_transformer_tab()
-    
+
     with tab2:
         internship_consolidator_tab()
+
+    with tab3:
+        advising_status_extractor_tab()
 
 if __name__ == "__main__":
     main()
