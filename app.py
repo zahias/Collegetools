@@ -443,6 +443,7 @@ def process_spth_advising(uploaded_zip) -> Tuple[pd.DataFrame, pd.DataFrame, byt
     summary = {course: {"Yes": 0, "Optional": 0, "Not Advised": 0} for course in courses}
     student_yes = {}
 
+    processed_buffer = BytesIO()
 
     with zipfile.ZipFile(uploaded_zip) as zin, zipfile.ZipFile(processed_buffer, 'w') as zout:
         for file_name in zin.namelist():
