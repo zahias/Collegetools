@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import re
-import io
+from io import BytesIO
 import zipfile
 import os
 from openpyxl import load_workbook
@@ -442,7 +442,7 @@ def process_spth_advising(uploaded_zip) -> Tuple[pd.DataFrame, pd.DataFrame, byt
 
     summary = {course: {"Yes": 0, "Optional": 0, "Not Advised": 0} for course in courses}
     student_yes = {}
-    processed_buffer = io.BytesIO()
+
 
     with zipfile.ZipFile(uploaded_zip) as zin, zipfile.ZipFile(processed_buffer, 'w') as zout:
         for file_name in zin.namelist():
@@ -450,11 +450,6 @@ def process_spth_advising(uploaded_zip) -> Tuple[pd.DataFrame, pd.DataFrame, byt
                 continue
             with zin.open(file_name) as f:
 
-                # Save cleaned file
-                b = io.BytesIO()
-                df.to_excel(b, index=False)
-                b.seek(0)
-                zout.writestr(file_name, b.getvalue())
 
                 student_name = os.path.splitext(os.path.basename(file_name))[0]
                 yes_courses = []
@@ -621,7 +616,7 @@ def grade_transformer_tab():
                 st.subheader("7. Download Cleaned Data")
                 
                 # Create Excel file in memory
-                output = io.BytesIO()
+                output = BytesIO()
                 tidy_df.to_excel(output, engine='openpyxl', sheet_name='Cleaned_Data', index=False)
                 
                 output.seek(0)
@@ -741,7 +736,7 @@ def internship_consolidator_tab():
                     st.subheader("Download Consolidated Report")
                     
                     # Convert DataFrame to Excel bytes
-                    output = io.BytesIO()
+                    output = BytesIO()
                     consolidated_df.to_excel(output, engine='openpyxl', sheet_name='Consolidated_Report', index=False)
                     
                     excel_data = output.getvalue()
