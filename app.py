@@ -449,13 +449,6 @@ def process_spth_advising(uploaded_zip) -> Tuple[pd.DataFrame, pd.DataFrame, byt
             if not file_name.lower().endswith(('.xlsx', '.xls')):
                 continue
             with zin.open(file_name) as f:
-                df_raw = pd.read_excel(
-                    f, sheet_name="Current Semester Advising", header=None
-                )
-                df = df_raw.iloc[8:].copy()
-                df.columns = df.iloc[0].astype(str).str.strip()
-                df = df[1:].rename(columns=lambda x: str(x).strip())
-                df = df[["Course Code", "Advised"]]
 
                 # Save cleaned file
                 b = io.BytesIO()
