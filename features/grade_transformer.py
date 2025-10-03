@@ -126,23 +126,30 @@ def _year_from_id(val) -> Optional[int]:
         return None
 
 def _is_pbhl(v: str) -> bool:
+    """Robust PBHL detector: matches PBHL, PUBHEA, or PUBLIC HEALTH ignoring spaces/punct and suffixes."""
     if not isinstance(v, str):
         return False
-    m = v.strip().upper()
-    return m.startswith("PBHL") or m == "PUBHEA" or ("PUBLIC" in m and "HEALTH" in m)
+    up = v.upper()
+    up_np = re.sub(r'[^A-Z0-9]', '', up)  # remove spaces/punct (e.g., 'PUB HEA' -> 'PUBHEA')
+    return (
+        "PBHL" in up_np or
+        "PUBHEA" in up_np or
+        "PUBLICHEALTH" in up_np or
+        ("PUBLIC" in up and "HEALTH" in up)
+    )
 
 def _is_spth(v: str) -> bool:
     if not isinstance(v, str):
         return False
-    m = v.strip().upper().replace(" ", "")
+    up_np = re.sub(r'[^A-Z0-9]', '', v.upper())
     tokens = ["SPTH", "SPETHE", "SPET", "SPEECH", "SPEECHTHERAPY", "SPEECHPATHOLOGY", "SLP"]
-    return any(tok in m for tok in tokens)
+    return any(tok in up_np for tok in tokens)
 
 def _is_nurs(v: str) -> bool:
     if not isinstance(v, str):
         return False
-    m = v.strip().upper().replace(" ", "")
-    return "NURS" in m or "NURSING" in m
+    up_np = re.sub(r'[^A-Z0-9]', '', v.upper())
+    return ("NURS" in up_np) or ("NURSING" in up_np)
 
 def _aggregate_program_string(row: pd.Series, program_cols: List[str]) -> str:
     parts = []
@@ -169,13 +176,13 @@ def _detect_id_column(df: pd.DataFrame) -> Optional[str]:
     return None
 
 def _find_program_columns(df: pd.DataFrame) -> List[str]:
-    # First try exact matches
+    # 1) exact matches
     program_candidates_exact = {"major", "program", "degree", "maj", "track", "curriculum", "department"}
     cols = []
     exact = _find_col_exact(df, list(program_candidates_exact))
     if exact:
         cols.append(exact)
-    # Then fuzzy matches that CONTAIN the root words (handles "Curriculum Name", "Major Name", etc.)
+    # 2) fuzzy matches that CONTAIN root words (handles "Curriculum Name", "Major Name", etc.)
     fuzzy_roots = ["major", "program", "degree", "maj", "track", "curriculum", "department"]
     more = _find_cols_fuzzy(df, fuzzy_roots)
     for c in more:
@@ -188,13 +195,10 @@ def _split_programs(df_like: pd.DataFrame):
     Split any dataframe (tidy or original) into:
       PBHL, SPTH Old (<=2021), SPTH New (>=2022), NURS
     Returns: (pbhl_df, spth_old_df, spth_new_df, nurs_df, id_col, program_cols_list)
-    - Program detection: coalesces values across all detected program-like columns.
-    - If ID missing: PBHL and NURS still produced; SPTH Old/New empty.
     """
     if df_like.empty:
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), None, []
 
-    # Detect columns
     id_col = _detect_id_column(df_like)
     program_cols = _find_program_columns(df_like)
 
@@ -202,7 +206,6 @@ def _split_programs(df_like: pd.DataFrame):
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), id_col, []
 
     df = df_like.copy()
-    # Build a single aggregated program string across all detected columns
     df["__PROGRAM_AGG__"] = df.apply(lambda r: _aggregate_program_string(r, program_cols), axis=1)
 
     df["__PBHL__"] = df["__PROGRAM_AGG__"].apply(_is_pbhl)
@@ -282,20 +285,22 @@ def run():
         with st.spinner("Filtering…"):
             pbhl_df, spth_old_df, spth_new_df, nurs_df, id_col, program_cols = _split_programs(raw_df)
 
-    # Diagnostics to help you verify detection
+    # Diagnostics (helps confirm PBHL detection)
     with st.expander("Detection diagnostics"):
         st.write("**Program columns used:**", program_cols if program_cols else "None")
         st.write("**ID column used:**", id_col if id_col else "None")
         if program_cols:
-            sample_vals = []
-            for c in program_cols:
-                vals = raw_df[c].dropna().astype(str).unique().tolist()
-                sample_vals.append((c, vals[:10]))
-            st.write("**Sample values from program columns (first 10 each):**")
-            st.write(sample_vals)
+            # Show quick value counts across detected program columns
+            agg = raw_df[program_cols].astype(str).apply(lambda s: s.str.upper().str.strip()).fillna("")
+            st.write("**Top program-like values (normalized, first 20):**")
+            try:
+                counts = pd.Series(agg.apply(lambda r: " | ".join([x for x in r if x and x.lower() != 'nan']), axis=1)).value_counts().head(20)
+                st.write(counts)
+            except Exception:
+                pass
 
     if not program_cols:
-        st.warning("Couldn't find a program column. Expected one of: MAJOR / CURRICULUM / PROGRAM / DEGREE / TRACK / DEPARTMENT (any fuzzy variant like 'Curriculum Name' also works).")
+        st.warning("Couldn't find a program column. Expected one of: MAJOR / CURRICULUM / PROGRAM / DEGREE / TRACK / DEPARTMENT (fuzzy variants like 'Curriculum Name' also work).")
         return
 
     if id_col is None:
@@ -348,7 +353,7 @@ def run():
 
     with st.expander("Detection rules"):
         st.write("- **Program columns**: we look for *any* of `MAJOR`, `CURRICULUM`, `PROGRAM`, `DEGREE`, `TRACK`, `DEPARTMENT` — fuzzy matches included (e.g., `Curriculum Name`).")
-        st.write("- **PBHL**: starts with `PBHL`, equals `PUBHEA`, or contains `PUBLIC` and `HEALTH`.")
-        st.write("- **SPTH**: contains one of `SPTH`, `SPETHE`, `SPET`, `SPEECH*`, `SLP`.")
-        st.write("- **NURS**: contains `NURS` or `NURSING`.")
+        st.write("- **PBHL**: matches `PBHL`, `PUBHEA`, or `PUBLIC HEALTH` (spacing/punctuation ignored).")
+        st.write("- **SPTH**: matches `SPTH`, `SPETHE`, `SPET`, `SPEECH*`, `SLP` (spacing/punctuation ignored).")
+        st.write("- **NURS**: matches `NURS` or `NURSING` (spacing/punctuation ignored).")
         st.write("- **SPTH Old/New**: by the first 4 digits found in **ID** (`≤ 2021` → Old, `≥ 2022` → New).")
