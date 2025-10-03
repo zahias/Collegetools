@@ -4,7 +4,7 @@ import re
 from io import BytesIO
 from typing import Optional, Tuple, List
 
-# ======================= Parsing helpers (existing behavior) =======================
+# ---------------------- Parsing helpers ----------------------
 def parse_course_semester_grade_from_column(column_name: str) -> Optional[Tuple[str, str, str, str]]:
     pattern = r'^([A-Z]+\d+)-([A-Za-z]+)(\d{4})-([A-F][+-]?|[A-F]|[A-Z][+-]?)$'
     m = re.match(pattern, column_name.strip())
@@ -87,7 +87,7 @@ def transform_grades_to_tidy(df: pd.DataFrame) -> pd.DataFrame:
     tidy = pd.DataFrame(parsed_rows)
     return tidy[[*id_cols, 'Course', 'Semester', 'Year', 'Grade']]
 
-# ======================= Split helpers (used by both modes) =======================
+# ---------------------- Split helpers ----------------------
 def _norm_col_name(s: str) -> str:
     return re.sub(r'[^a-z0-9]', '', s.strip().lower())
 
@@ -113,52 +113,68 @@ def _year_from_id(val) -> Optional[int]:
     except Exception:
         return None
 
-def _is_pbhl(major_val: str) -> bool:
-    if not isinstance(major_val, str):
+def _is_pbhl(v: str) -> bool:
+    if not isinstance(v, str):
         return False
-    m = major_val.strip().upper()
-    # PBHL family, PUBHEA, or text "PUBLIC HEALTH"
+    m = v.strip().upper()
     return m.startswith("PBHL") or m == "PUBHEA" or ("PUBLIC" in m and "HEALTH" in m)
 
-def _is_spth(major_val: str) -> bool:
-    if not isinstance(major_val, str):
+def _is_spth(v: str) -> bool:
+    if not isinstance(v, str):
         return False
-    m = major_val.strip().upper().replace(" ", "")
-    # Includes your data's label "SPETHE" and common variants
+    m = v.strip().upper().replace(" ", "")
     tokens = ["SPTH", "SPETHE", "SPET", "SPEECH", "SPEECHTHERAPY", "SPEECHPATHOLOGY", "SLP"]
     return any(tok in m for tok in tokens)
 
-def _split_three(df_like: pd.DataFrame):
+def _is_nurs(v: str) -> bool:
+    if not isinstance(v, str):
+        return False
+    m = v.strip().upper().replace(" ", "")
+    # Explicit NURS + common expansion
+    return "NURS" in m or "NURSING" in m
+
+def _split_programs(df_like: pd.DataFrame):
     """
-    Split any dataframe (tidy or original) into PBHL / SPTH Old / SPTH New.
-    Returns (pbhl_df, spth_old_df, spth_new_df, id_col, major_col).
+    Split any dataframe (tidy or original) into:
+      PBHL, SPTH Old (<=2021), SPTH New (>=2022), NURS
+    Returns: (pbhl_df, spth_old_df, spth_new_df, nurs_df, id_col, program_col)
+    - If program column missing => all empty
+    - If ID missing => PBHL & NURS still produced, SPTH Old/New empty (warn in UI)
     """
     if df_like.empty:
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), None, None
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), None, None
 
     id_candidates = {"id", "studentid", "sid", "student_id", "studentnumber", "studentno"}
-    major_candidates = {"major", "program", "degree", "maj", "track"}
+    # <-- includes CURRICULUM now
+    program_candidates = {"major", "program", "degree", "maj", "track", "curriculum"}
 
     id_col = _find_col(df_like, list(id_candidates))
-    major_col = _find_col(df_like, list(major_candidates))
+    program_col = _find_col(df_like, list(program_candidates))
 
-    if id_col is None or major_col is None:
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), id_col, major_col
+    if program_col is None:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), id_col, program_col
 
     df = df_like.copy()
-    df["_MAJOR_OK_PBHL"] = df[major_col].apply(_is_pbhl)
-    df["_MAJOR_OK_SPTH"] = df[major_col].apply(_is_spth)
-    df["_ID_YEAR"] = df[id_col].apply(_year_from_id)
+    df["_PBHL"] = df[program_col].apply(_is_pbhl)
+    df["_SPTH"] = df[program_col].apply(_is_spth)
+    df["_NURS"] = df[program_col].apply(_is_nurs)
 
-    pbhl_df = df[df["_MAJOR_OK_PBHL"]].drop(columns=["_MAJOR_OK_PBHL","_MAJOR_OK_SPTH","_ID_YEAR"])
-    spth_old_df = df[(df["_MAJOR_OK_SPTH"]) & (df["_ID_YEAR"].notna()) & (df["_ID_YEAR"] <= 2021)] \
-                    .drop(columns=["_MAJOR_OK_PBHL","_MAJOR_OK_SPTH","_ID_YEAR"])
-    spth_new_df = df[(df["_MAJOR_OK_SPTH"]) & (df["_ID_YEAR"].notna()) & (df["_ID_YEAR"] >= 2022)] \
-                    .drop(columns=["_MAJOR_OK_PBHL","_MAJOR_OK_SPTH","_ID_YEAR"])
+    pbhl_df = df[df["_PBHL"]].drop(columns=["_PBHL","_SPTH","_NURS"], errors="ignore")
+    nurs_df = df[df["_NURS"]].drop(columns=["_PBHL","_SPTH","_NURS"], errors="ignore")
 
-    return pbhl_df, spth_old_df, spth_new_df, id_col, major_col
+    spth_old_df = pd.DataFrame()
+    spth_new_df = pd.DataFrame()
 
-# ======================= UI =======================
+    if id_col is not None:
+        df["_ID_YEAR"] = df[id_col].apply(_year_from_id)
+        spth_old_df = df[(df["_SPTH"]) & (df["_ID_YEAR"].notna()) & (df["_ID_YEAR"] <= 2021)] \
+                        .drop(columns=["_PBHL","_SPTH","_NURS","_ID_YEAR"], errors="ignore")
+        spth_new_df = df[(df["_SPTH"]) & (df["_ID_YEAR"].notna()) & (df["_ID_YEAR"] >= 2022)] \
+                        .drop(columns=["_PBHL","_SPTH","_NURS","_ID_YEAR"], errors="ignore")
+
+    return pbhl_df, spth_old_df, spth_new_df, nurs_df, id_col, program_col
+
+# ---------------------- UI ----------------------
 def run():
     st.subheader("📊 Grade Data Transformer")
 
@@ -166,7 +182,8 @@ def run():
         "Choose output mode",
         ["Transform to tidy then split", "Split original (no transformation)"],
         index=0,
-        help="If you pick 'Split original', the app will filter the uploaded sheet as-is into PBHL / SPTH Old / SPTH New, without melting."
+        key="gt_mode",
+        help="Pick 'Split original' to keep all original columns and only filter by program/ID."
     )
 
     up = st.file_uploader("Upload an Excel file (.xlsx/.xls)", type=["xlsx","xls"])
@@ -183,7 +200,6 @@ def run():
     st.markdown("**Original Preview**")
     st.dataframe(raw_df.head(10), use_container_width=True)
 
-    # ---------------- Mode A: Transform to tidy, then split (existing) ----------------
     if mode == "Transform to tidy then split":
         st.markdown("**Transform**")
         with st.spinner("Transforming…"):
@@ -196,9 +212,8 @@ def run():
         c1, c2, c3 = st.columns(3)
         with c1: st.metric("Original Rows", raw_df.shape[0])
         with c2: st.metric("Transformed Rows", tidy_df.shape[0])
-        # Unique students = try to use detected ID column; else first column
-        id_like_cols = [c for c in tidy_df.columns if _norm_col_name(str(c)) in {"id","studentid","sid","student_id","studentnumber","studentno"}]
-        with c3: st.metric("Unique Students", tidy_df[id_like_cols[0]].nunique() if id_like_cols else tidy_df.iloc[:,0].nunique())
+        id_like = [c for c in tidy_df.columns if _norm_col_name(str(c)) in {"id","studentid","sid","student_id","studentnumber","studentno"}]
+        with c3: st.metric("Unique Students", tidy_df[id_like[0]].nunique() if id_like else tidy_df.iloc[:,0].nunique())
 
         st.markdown("**Tidy Preview**")
         st.dataframe(tidy_df.head(20), use_container_width=True)
@@ -211,104 +226,68 @@ def run():
                            file_name="cleaned_student_data.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-        # split into 3
-        pbhl_df, spth_old_df, spth_new_df, id_col, major_col = _split_three(tidy_df)
-        if id_col is None or major_col is None:
-            st.warning("Could not detect ID and/or MAJOR columns — skipping PBHL/SPTH split downloads. "
-                       "Please ensure columns like 'ID' and 'MAJOR' exist (case-insensitive).")
-            return
-
-        st.markdown("---")
-        st.markdown("### 🎯 Program-Specific Downloads (from tidy data)")
-
-        colA, colB, colC = st.columns(3)
-        with colA:
-            st.caption("PBHL only")
-            if pbhl_df.empty:
-                st.info("No PBHL records found.")
-            else:
-                out = BytesIO(); pbhl_df.to_excel(out, engine="openpyxl", index=False, sheet_name="PBHL")
-                st.download_button("📥 Download PBHL Excel", out.getvalue(),
-                                   file_name="cleaned_PBHL.xlsx",
-                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-        with colB:
-            st.caption("SPTH (Old) — IDs starting 2021 and below")
-            if spth_old_df.empty:
-                st.info("No SPTH (Old) records found.")
-            else:
-                out = BytesIO(); spth_old_df.to_excel(out, engine="openpyxl", index=False, sheet_name="SPTH_Old")
-                st.download_button("📥 Download SPTH Old Excel", out.getvalue(),
-                                   file_name="cleaned_SPTH_old.xlsx",
-                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-        with colC:
-            st.caption("SPTH (New) — IDs starting 2022 and above")
-            if spth_new_df.empty:
-                st.info("No SPTH (New) records found.")
-            else:
-                out = BytesIO(); spth_new_df.to_excel(out, engine="openpyxl", index=False, sheet_name="SPTH_New")
-                st.download_button("📥 Download SPTH New Excel", out.getvalue(),
-                                   file_name="cleaned_SPTH_new.xlsx",
-                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-    # ---------------- Mode B: Split original (no transformation) ----------------
+        pbhl_df, spth_old_df, spth_new_df, nurs_df, id_col, program_col = _split_programs(tidy_df)
     else:
         st.markdown("**Split original (no transformation)**")
         with st.spinner("Filtering…"):
-            pbhl_raw, spth_old_raw, spth_new_raw, id_col, major_col = _split_three(raw_df)
+            pbhl_df, spth_old_df, spth_new_df, nurs_df, id_col, program_col = _split_programs(raw_df)
 
-        if id_col is None or major_col is None:
-            st.warning("Could not detect ID and/or MAJOR columns. "
-                       "Please ensure your original sheet has columns like 'ID' and 'MAJOR' (case-insensitive).")
-            return
+    # Guidance if columns missing
+    if program_col is None:
+        st.warning("Could not detect a program column. Expected one of: MAJOR, CURRICULUM, PROGRAM, DEGREE, TRACK. "
+                   "Please ensure your sheet has one of these (case-insensitive).")
+        return
+    if id_col is None:
+        st.info("ID column not detected — PBHL and NURS are available; SPTH Old/New need ID to infer year.")
 
-        # quick stats
-        c1, c2, c3, c4 = st.columns(4)
-        with c1: st.metric("Rows (original)", raw_df.shape[0])
-        with c2: st.metric("PBHL rows", len(pbhl_raw))
-        with c3: st.metric("SPTH Old rows", len(spth_old_raw))
-        with c4: st.metric("SPTH New rows", len(spth_new_raw))
+    st.markdown("---")
+    st.markdown("### 🎯 Program-Specific Downloads")
 
-        st.markdown("---")
-        st.markdown("### 🎯 Program-Specific Downloads (original data, untransformed)")
+    colA, colB, colC, colD = st.columns(4)
 
-        colA, colB, colC = st.columns(3)
-        with colA:
-            st.caption("PBHL only (original columns)")
-            if pbhl_raw.empty:
-                st.info("No PBHL records found.")
-            else:
-                out = BytesIO(); pbhl_raw.to_excel(out, engine="openpyxl", index=False, sheet_name="PBHL_raw")
-                st.download_button("📥 Download PBHL (original)", out.getvalue(),
-                                   file_name="original_PBHL.xlsx",
-                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    with colA:
+        st.caption("PBHL only")
+        if pbhl_df.empty:
+            st.info("No PBHL records found.")
+        else:
+            out = BytesIO(); pbhl_df.to_excel(out, engine="openpyxl", index=False, sheet_name="PBHL")
+            st.download_button("📥 PBHL Excel", out.getvalue(),
+                               file_name="PBHL.xlsx",
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-        with colB:
-            st.caption("SPTH (Old) — IDs ≤ 2021 (original columns)")
-            if spth_old_raw.empty:
-                st.info("No SPTH (Old) records found.")
-            else:
-                out = BytesIO(); spth_old_raw.to_excel(out, engine="openpyxl", index=False, sheet_name="SPTH_Old_raw")
-                st.download_button("📥 Download SPTH Old (original)", out.getvalue(),
-                                   file_name="original_SPTH_old.xlsx",
-                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    with colB:
+        st.caption("SPTH (Old) — IDs ≤ 2021")
+        if spth_old_df.empty:
+            st.info("No SPTH (Old) records found.")
+        else:
+            out = BytesIO(); spth_old_df.to_excel(out, engine="openpyxl", index=False, sheet_name="SPTH_Old")
+            st.download_button("📥 SPTH Old Excel", out.getvalue(),
+                               file_name="SPTH_old.xlsx",
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-        with colC:
-            st.caption("SPTH (New) — IDs ≥ 2022 (original columns)")
-            if spth_new_raw.empty:
-                st.info("No SPTH (New) records found.")
-            else:
-                out = BytesIO(); spth_new_raw.to_excel(out, engine="openpyxl", index=False, sheet_name="SPTH_New_raw")
-                st.download_button("📥 Download SPTH New (original)", out.getvalue(),
-                                   file_name="original_SPTH_new.xlsx",
-                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    with colC:
+        st.caption("SPTH (New) — IDs ≥ 2022")
+        if spth_new_df.empty:
+            st.info("No SPTH (New) records found.")
+        else:
+            out = BytesIO(); spth_new_df.to_excel(out, engine="openpyxl", index=False, sheet_name="SPTH_New")
+            st.download_button("📥 SPTH New Excel", out.getvalue(),
+                               file_name="SPTH_new.xlsx",
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-    with st.expander("Format details"):
-        st.write("- **Transform mode:** Accepts either column-name pattern `Course-SemesterYear-Grade` "
-                 "or value pattern like `COURSE/SEM-YEAR/GRADE` inside `COURSE*` columns.")
-        st.write("- **Split rules:**")
-        st.write("  - **PBHL**: MAJOR starts with `PBHL`, equals `PUBHEA`, or contains `PUBLIC` + `HEALTH`.")
-        st.write("  - **SPTH**: MAJOR contains one of `SPTH`, `SPETHE`, `SPET`, `SPEECH*`, `SLP`.")
-        st.write("  - **Old vs New**: determined by the first 4 digits in the **ID** value; "
-                 "`≤ 2021` → Old, `≥ 2022` → New.")
+    with colD:
+        st.caption("NURS (Nursing)")
+        if nurs_df.empty:
+            st.info("No NURS records found.")
+        else:
+            out = BytesIO(); nurs_df.to_excel(out, engine="openpyxl", index=False, sheet_name="NURS")
+            st.download_button("📥 NURS Excel", out.getvalue(),
+                               file_name="NURS.xlsx",
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+    with st.expander("Detection rules"):
+        st.write("- **Program column**: looks for one of `MAJOR`, `CURRICULUM`, `PROGRAM`, `DEGREE`, `TRACK` (case-insensitive).")
+        st.write("- **PBHL**: starts with `PBHL`, equals `PUBHEA`, or contains `PUBLIC` and `HEALTH`.")
+        st.write("- **SPTH**: contains one of `SPTH`, `SPETHE`, `SPET`, `SPEECH*`, `SLP`.")
+        st.write("- **NURS**: contains `NURS` or `NURSING`.")
+        st.write("- **SPTH Old/New** split: by the first 4 digits found in **ID** (`≤ 2021` → Old, `≥ 2022` → New).")
