@@ -4,7 +4,7 @@ import re
 from io import BytesIO
 from typing import Optional, Tuple, List
 
-# ======================= Parsing helpers (existing transform mode) =======================
+# ======================= Parsing helpers (transform mode) =======================
 def parse_course_semester_grade_from_column(column_name: str) -> Optional[Tuple[str, str, str, str]]:
     pattern = r'^([A-Z]+\d+)-([A-Za-z]+)(\d{4})-([A-F][+-]?|[A-F]|[A-Z][+-]?)$'
     m = re.match(pattern, column_name.strip())
@@ -92,7 +92,6 @@ def _norm_col_name(s: str) -> str:
     return re.sub(r'[^a-z0-9]', '', s.strip().lower())
 
 def _find_col_exact(df: pd.DataFrame, candidates_norm: List[str]) -> Optional[str]:
-    """Exact normalized match."""
     norm_map = {col: _norm_col_name(str(col)) for col in df.columns}
     for col, n in norm_map.items():
         if n in candidates_norm:
@@ -100,10 +99,6 @@ def _find_col_exact(df: pd.DataFrame, candidates_norm: List[str]) -> Optional[st
     return None
 
 def _find_cols_fuzzy(df: pd.DataFrame, roots: List[str]) -> List[str]:
-    """
-    Fuzzy finder: return all columns whose normalized name contains ANY of the roots
-    (e.g., 'curriculumname' contains 'curriculum', 'majorname' contains 'major').
-    """
     norm_map = {col: _norm_col_name(str(col)) for col in df.columns}
     cols = []
     for col, n in norm_map.items():
@@ -125,12 +120,16 @@ def _year_from_id(val) -> Optional[int]:
     except Exception:
         return None
 
+# ---- Program detectors (hardened) ----
+def _strip_np(txt: str) -> str:
+    return re.sub(r'[^A-Z0-9]', '', txt.upper())
+
 def _is_pbhl(v: str) -> bool:
-    """Robust PBHL detector: matches PBHL, PUBHEA, or PUBLIC HEALTH ignoring spaces/punct and suffixes."""
     if not isinstance(v, str):
         return False
     up = v.upper()
-    up_np = re.sub(r'[^A-Z0-9]', '', up)  # remove spaces/punct (e.g., 'PUB HEA' -> 'PUBHEA')
+    up_np = _strip_np(v)
+    # Matches PBHL, any PUBHEA*, PUBLIC HEALTH (with spaces/punct), and common variants
     return (
         "PBHL" in up_np or
         "PUBHEA" in up_np or
@@ -141,15 +140,22 @@ def _is_pbhl(v: str) -> bool:
 def _is_spth(v: str) -> bool:
     if not isinstance(v, str):
         return False
-    up_np = re.sub(r'[^A-Z0-9]', '', v.upper())
+    up_np = _strip_np(v)
     tokens = ["SPTH", "SPETHE", "SPET", "SPEECH", "SPEECHTHERAPY", "SPEECHPATHOLOGY", "SLP"]
     return any(tok in up_np for tok in tokens)
 
 def _is_nurs(v: str) -> bool:
     if not isinstance(v, str):
         return False
-    up_np = re.sub(r'[^A-Z0-9]', '', v.upper())
+    up_np = _strip_np(v)
     return ("NURS" in up_np) or ("NURSING" in up_np)
+
+def _is_majorless(v: str) -> bool:
+    if not isinstance(v, str):
+        return False
+    up_np = _strip_np(v)
+    # Main code requested: MAJRLS. Add a few safe synonyms.
+    return ("MAJRLS" in up_np) or ("MAJORLESS" in up_np) or ("UNDECLARED" in up_np)
 
 def _aggregate_program_string(row: pd.Series, program_cols: List[str]) -> str:
     parts = []
@@ -163,12 +169,11 @@ def _aggregate_program_string(row: pd.Series, program_cols: List[str]) -> str:
     return " | ".join(parts)
 
 def _detect_id_column(df: pd.DataFrame) -> Optional[str]:
-    # Try exact first
     id_candidates_exact = {"id", "studentid", "sid", "student_id", "studentnumber", "studentno"}
     col = _find_col_exact(df, list(id_candidates_exact))
     if col:
         return col
-    # Fallback: fuzzy for 'student' + 'id' or 'student' + 'number'
+    # Fallback: fuzzy
     norm_map = {col: _norm_col_name(str(col)) for col in df.columns}
     for col, n in norm_map.items():
         if ("studentid" in n) or ("studentnumber" in n) or n == "id":
@@ -176,14 +181,14 @@ def _detect_id_column(df: pd.DataFrame) -> Optional[str]:
     return None
 
 def _find_program_columns(df: pd.DataFrame) -> List[str]:
-    # 1) exact matches
+    # exact matches
     program_candidates_exact = {"major", "program", "degree", "maj", "track", "curriculum", "department"}
     cols = []
     exact = _find_col_exact(df, list(program_candidates_exact))
     if exact:
         cols.append(exact)
-    # 2) fuzzy matches that CONTAIN root words (handles "Curriculum Name", "Major Name", etc.)
-    fuzzy_roots = ["major", "program", "degree", "maj", "track", "curriculum", "department"]
+    # fuzzy matches (handles 'Curriculum Name', 'Major Plan', etc.)
+    fuzzy_roots = ["major", "maj", "program", "prog", "degree", "track", "curriculum", "curr", "department", "dept"]
     more = _find_cols_fuzzy(df, fuzzy_roots)
     for c in more:
         if c not in cols:
@@ -193,17 +198,17 @@ def _find_program_columns(df: pd.DataFrame) -> List[str]:
 def _split_programs(df_like: pd.DataFrame):
     """
     Split any dataframe (tidy or original) into:
-      PBHL, SPTH Old (<=2021), SPTH New (>=2022), NURS
-    Returns: (pbhl_df, spth_old_df, spth_new_df, nurs_df, id_col, program_cols_list)
+      PBHL, SPTH Old (<=2021), SPTH New (>=2022), NURS, MAJRLS
+    Returns: (pbhl_df, spth_old_df, spth_new_df, nurs_df, majorless_df, id_col, program_cols_list)
     """
     if df_like.empty:
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), None, []
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), None, []
 
     id_col = _detect_id_column(df_like)
     program_cols = _find_program_columns(df_like)
 
     if not program_cols:
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), id_col, []
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), id_col, []
 
     df = df_like.copy()
     df["__PROGRAM_AGG__"] = df.apply(lambda r: _aggregate_program_string(r, program_cols), axis=1)
@@ -211,9 +216,13 @@ def _split_programs(df_like: pd.DataFrame):
     df["__PBHL__"] = df["__PROGRAM_AGG__"].apply(_is_pbhl)
     df["__SPTH__"] = df["__PROGRAM_AGG__"].apply(_is_spth)
     df["__NURS__"] = df["__PROGRAM_AGG__"].apply(_is_nurs)
+    df["__MAJRLS__"] = df["__PROGRAM_AGG__"].apply(_is_majorless)
 
-    pbhl_df = df[df["__PBHL__"]].drop(columns=["__PROGRAM_AGG__","__PBHL__","__SPTH__","__NURS__"], errors="ignore")
-    nurs_df = df[df["__NURS__"]].drop(columns=["__PROGRAM_AGG__","__PBHL__","__SPTH__","__NURS__"], errors="ignore")
+    base_drop = ["__PROGRAM_AGG__","__PBHL__","__SPTH__","__NURS__","__MAJRLS__"]
+
+    pbhl_df = df[df["__PBHL__"]].drop(columns=base_drop, errors="ignore")
+    nurs_df = df[df["__NURS__"]].drop(columns=base_drop, errors="ignore")
+    majorless_df = df[df["__MAJRLS__"]].drop(columns=base_drop, errors="ignore")
 
     spth_old_df = pd.DataFrame()
     spth_new_df = pd.DataFrame()
@@ -221,11 +230,11 @@ def _split_programs(df_like: pd.DataFrame):
     if id_col is not None:
         df["__ID_YEAR__"] = df[id_col].apply(_year_from_id)
         spth_old_df = df[(df["__SPTH__"]) & (df["__ID_YEAR__"].notna()) & (df["__ID_YEAR__"] <= 2021)] \
-                        .drop(columns=["__PROGRAM_AGG__","__PBHL__","__SPTH__","__NURS__","__ID_YEAR__"], errors="ignore")
+                        .drop(columns=base_drop + ["__ID_YEAR__"], errors="ignore")
         spth_new_df = df[(df["__SPTH__"]) & (df["__ID_YEAR__"].notna()) & (df["__ID_YEAR__"] >= 2022)] \
-                        .drop(columns=["__PROGRAM_AGG__","__PBHL__","__SPTH__","__NURS__","__ID_YEAR__"], errors="ignore")
+                        .drop(columns=base_drop + ["__ID_YEAR__"], errors="ignore")
 
-    return pbhl_df, spth_old_df, spth_new_df, nurs_df, id_col, program_cols
+    return pbhl_df, spth_old_df, spth_new_df, nurs_df, majorless_df, id_col, program_cols
 
 # ======================= UI =======================
 def run():
@@ -279,40 +288,36 @@ def run():
                            file_name="cleaned_student_data.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-        pbhl_df, spth_old_df, spth_new_df, nurs_df, id_col, program_cols = _split_programs(tidy_df)
+        pbhl_df, spth_old_df, spth_new_df, nurs_df, majorless_df, id_col, program_cols = _split_programs(tidy_df)
     else:
         st.markdown("**Split original (no transformation)**")
         with st.spinner("Filtering…"):
-            pbhl_df, spth_old_df, spth_new_df, nurs_df, id_col, program_cols = _split_programs(raw_df)
+            pbhl_df, spth_old_df, spth_new_df, nurs_df, majorless_df, id_col, program_cols = _split_programs(raw_df)
 
-    # Diagnostics (helps confirm PBHL detection)
+    # Diagnostics to confirm detection
     with st.expander("Detection diagnostics"):
         st.write("**Program columns used:**", program_cols if program_cols else "None")
         st.write("**ID column used:**", id_col if id_col else "None")
         if program_cols:
-            # Show quick value counts across detected program columns
-            agg = raw_df[program_cols].astype(str).apply(lambda s: s.str.upper().str.strip()).fillna("")
-            st.write("**Top program-like values (normalized, first 20):**")
-            try:
-                counts = pd.Series(agg.apply(lambda r: " | ".join([x for x in r if x and x.lower() != 'nan']), axis=1)).value_counts().head(20)
-                st.write(counts)
-            except Exception:
-                pass
+            norm = raw_df[program_cols].astype(str).apply(lambda s: s.str.upper().str.strip())
+            sample = pd.Series(norm.apply(lambda r: " | ".join([x for x in r if x and x.lower() != 'nan']), axis=1)).value_counts().head(25)
+            st.write("**Top program-like values (first 25):**")
+            st.write(sample)
 
     if not program_cols:
         st.warning("Couldn't find a program column. Expected one of: MAJOR / CURRICULUM / PROGRAM / DEGREE / TRACK / DEPARTMENT (fuzzy variants like 'Curriculum Name' also work).")
         return
 
     if id_col is None:
-        st.info("ID column not detected — PBHL and NURS will work; SPTH Old/New need ID to infer year (≤2021 vs ≥2022).")
+        st.info("ID column not detected — PBHL / NURS / MAJRLS will work; SPTH Old/New need ID to infer year (≤2021 vs ≥2022).")
 
     st.markdown("---")
     st.markdown("### 🎯 Program-Specific Downloads")
 
-    colA, colB, colC, colD = st.columns(4)
+    colA, colB, colC, colD, colE = st.columns(5)
 
     with colA:
-        st.caption("PBHL only")
+        st.caption("PBHL")
         if pbhl_df.empty:
             st.info("No PBHL records found.")
         else:
@@ -351,9 +356,20 @@ def run():
                                file_name="NURS.xlsx",
                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
+    with colE:
+        st.caption("MAJRLS (Majorless)")
+        if majorless_df.empty:
+            st.info("No MAJRLS records found.")
+        else:
+            out = BytesIO(); majorless_df.to_excel(out, engine="openpyxl", index=False, sheet_name="MAJRLS")
+            st.download_button("📥 MAJRLS Excel", out.getvalue(),
+                               file_name="MAJRLS.xlsx",
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
     with st.expander("Detection rules"):
-        st.write("- **Program columns**: we look for *any* of `MAJOR`, `CURRICULUM`, `PROGRAM`, `DEGREE`, `TRACK`, `DEPARTMENT` — fuzzy matches included (e.g., `Curriculum Name`).")
-        st.write("- **PBHL**: matches `PBHL`, `PUBHEA`, or `PUBLIC HEALTH` (spacing/punctuation ignored).")
-        st.write("- **SPTH**: matches `SPTH`, `SPETHE`, `SPET`, `SPEECH*`, `SLP` (spacing/punctuation ignored).")
-        st.write("- **NURS**: matches `NURS` or `NURSING` (spacing/punctuation ignored).")
+        st.write("- **Program columns**: any of `MAJOR`, `CURRICULUM`, `PROGRAM`, `DEGREE`, `TRACK`, `DEPARTMENT` (fuzzy variants like 'Curriculum Name' also work).")
+        st.write("- **PBHL**: matches `PBHL`, any `PUBHEA*`, or `PUBLIC HEALTH` (spacing/punct ignored).")
+        st.write("- **SPTH**: matches `SPTH`, `SPETHE`, `SPET`, `SPEECH*`, `SLP` (spacing/punct ignored).")
+        st.write("- **NURS**: matches `NURS` or `NURSING` (spacing/punct ignored).")
+        st.write("- **MAJRLS**: matches `MAJRLS`, `MAJORLESS`, or `UNDECLARED`.")
         st.write("- **SPTH Old/New**: by the first 4 digits found in **ID** (`≤ 2021` → Old, `≥ 2022` → New).")
