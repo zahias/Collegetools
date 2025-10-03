@@ -1,60 +1,99 @@
+# features/grade_transformer.py
 import streamlit as st
 import pandas as pd
 import re
 from io import BytesIO
 from typing import Optional, Tuple, List, Dict
 
-# ============= Parsing helpers (transform mode) =============
-def parse_course_semester_grade_from_column(column_name: str) -> Optional[Tuple[str, str, str, str]]:
-    pattern = r'^([A-Z]+\d+)-([A-Za-z]+)(\d{4})-([A-F][+-]?|[A-F]|[A-Z][+-]?)$'
-    m = re.match(pattern, str(column_name).strip())
-    if m:
-        return m.groups()
-    pattern2 = r'^([A-Z]+\d+)[-_]([A-Za-z]+)[-_](\d{4})[-_]([A-F][+-]?|[A-F]|[A-Z][+-]?)$'
-    m2 = re.match(pattern2, str(column_name).strip())
-    return m2.groups() if m2 else None
+# ======================= Parsing helpers (transform mode) =======================
+def parse_course_semester_grade_from_column(column_name: str) -> Optional[Tuple[str, str, str, Optional[str]]]:
+    """
+    Parse from column headers like 'MATH101-Fall2024-A' or 'MATH101_Fall_2024_A'.
+    Returns (course, semester, year, grade) where grade may be None if not present.
+    """
+    s = str(column_name).strip()
+    if not s:
+        return None
 
-def parse_course_semester_grade_from_value(value: str) -> Optional[Tuple[str, str, str, str]]:
+    # COURSE-SemYear-Grade (e.g., PBHL201-Fall2020-A)
+    m = re.match(r'^([A-Z]+\d+)[-_]([A-Za-z]+)[-_](\d{4})[-_]?([A-Za-z][+-]?)?$', s)
+    if m:
+        course, semester, year, grade = m.groups()
+        semester = semester.title()
+        return course, semester, year, grade
+
+    return None
+
+
+def parse_course_semester_grade_from_value(value: str) -> Optional[Tuple[str, str, str, Optional[str]]]:
+    """
+    Parse from cell values like:
+      - 'SPTH201/FALL-2016/F'
+      - 'SPTH201/FALL/2016/F'
+      - 'SPTH201/FALL-2016'  -> grade missing, keep as None
+    Returns (course, semester, year, grade) where grade may be None.
+    """
+    import pandas as pd
     if pd.isna(value) or not isinstance(value, str):
         return None
+
     v = value.strip()
     if not v:
         return None
-    p1 = r'^([A-Z]+\d+[A-Z]*)/([A-Z]+-\d{4})/([A-F][+-]?|[A-Z][+-]?|P\*?|R)$'
-    m1 = re.match(p1, v.upper())
+    V = v.upper()
+
+    # COURSE/SEM-YEAR/GRADE  (e.g., SPTH201/FALL-2016/F)
+    m1 = re.match(r'^([A-Z]+\d+[A-Z]*)/([A-Z]+)-(\d{4})/([A-Z][+-]?|P\*?|R)$', V)
     if m1:
-        course, sem_year, grade = m1.groups()
-        if '-' in sem_year:
-            semester, year = sem_year.split('-', 1)
-            return course, semester, year, grade
-    p2 = r'^([A-Z]+\d+[A-Z]*)/([A-Z]+)/(\d{4})/([A-F][+-]?|[A-Z][+-]?|P\*?|R)$'
-    m2 = re.match(p2, v.upper())
+        course, semester, year, grade = m1.groups()
+        return course, semester, year, grade
+
+    # COURSE/SEM/YEAR/GRADE  (e.g., SPTH201/FALL/2016/F)
+    m2 = re.match(r'^([A-Z]+\d+[A-Z]*)/([A-Z]+)/(\d{4})/([A-Z][+-]?|P\*?|R)$', V)
     if m2:
         return m2.groups()
-    p3 = r'^([A-Z]+\d+[A-Z]*)/([A-Z]+-\d{4})/?$'
-    m3 = re.match(p3, v.upper())
+
+    # COURSE/SEM-YEAR  (grade truly missing → keep as None)
+    m3 = re.match(r'^([A-Z]+\d+[A-Z]*)/([A-Z]+)-(\d{4})/?$', V)
     if m3:
-        course, sem_year = m3.groups()
-        if '-' in sem_year:
-            semester, year = sem_year.split('-', 1)
-            return course, semester, year, "INCOMPLETE"
+        course, semester, year = m3.groups()
+        return course, semester, year, None
+
     return None
 
-def identify_grade_columns(df: pd.DataFrame) -> list:
-    grade_cols = [c for c in df.columns if parse_course_semester_grade_from_column(str(c))]
-    if grade_cols:
-        return grade_cols
+
+def identify_grade_columns(df: pd.DataFrame) -> List[str]:
+    """
+    Detect grade-bearing columns either by header pattern or by "COURSE*" columns
+    whose values parse like COURSE/SEM-YEAR/GRADE.
+    """
+    cols: List[str] = []
+    # Pattern from column name
+    for c in df.columns:
+        if parse_course_semester_grade_from_column(str(c)):
+            cols.append(c)
+    if cols:
+        return cols
+
+    # "COURSE*" columns that contain parsable values
     for c in df.columns:
         if str(c).upper().startswith('COURSE'):
-            sample = df[c].dropna().head(5)
-            if any(parse_course_semester_grade_from_value(str(v)) for v in sample):
-                grade_cols.append(c)
-    return grade_cols
+            sample = df[c].dropna().astype(str).head(8)
+            if any(parse_course_semester_grade_from_value(s) for s in sample):
+                cols.append(c)
+    return cols
+
 
 def transform_grades_to_tidy(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Melt wide grade layout to tidy:
+      [id cols..., Course, Semester, Year, Grade]
+    - Keeps rows with missing grades (Grade left blank)
+    """
     dfc = df.copy().dropna(axis=1, how='all')
     grade_cols = identify_grade_columns(dfc)
     id_cols = [c for c in dfc.columns if c not in grade_cols]
+
     if not grade_cols:
         st.warning("No grade columns detected. Check your format.")
         return pd.DataFrame()
@@ -63,31 +102,44 @@ def transform_grades_to_tidy(df: pd.DataFrame) -> pd.DataFrame:
         dfc, id_vars=id_cols, value_vars=grade_cols,
         var_name='Course_Semester_Grade', value_name='Grade'
     )
-    melted = melted.dropna(subset=['Grade'])
-    melted = melted[melted['Grade'].astype(str).str.strip() != '']
 
-    parsed_rows = []
+    parsed_rows: List[Dict] = []
     for _, row in melted.iterrows():
-        parsed = parse_course_semester_grade_from_column(str(row['Course_Semester_Grade'])) \
-                 or parse_course_semester_grade_from_value(str(row['Grade']))
-        if parsed:
-            course, semester, year, grade = parsed
-            new_row = {c: row[c] for c in id_cols}
-            new_row.update({
-                'Course': course,
-                'Semester': semester.title(),
-                'Year': int(year),
-                'Grade': grade
-            })
-            parsed_rows.append(new_row)
+        col_parsed = parse_course_semester_grade_from_column(str(row['Course_Semester_Grade']))
+        val_parsed = parse_course_semester_grade_from_value(str(row['Grade'])) if pd.notna(row['Grade']) else None
+
+        # Prefer column parsing (structure) and use cell value only if column didn't carry the info
+        course = semester = year = grade = None
+
+        if col_parsed:
+            course, semester, year, grade_from_col = col_parsed
+            if pd.isna(row['Grade']) or str(row['Grade']).strip() == '':
+                grade = grade_from_col  # may be None
+            else:
+                # If the cell encodes the full thing, prefer its grade; else use the raw cell text
+                grade = val_parsed[3] if (val_parsed and len(val_parsed) == 4) else str(row['Grade']).strip()
+        elif val_parsed:
+            course, semester, year, grade = val_parsed
+        else:
+            continue  # cannot parse anything -> skip
+
+        new_row = {c: row[c] for c in id_cols}
+        new_row.update({
+            'Course': course,
+            'Semester': str(semester).title() if semester else None,
+            'Year': int(year) if year else None,
+            'Grade': grade  # keep None if missing
+        })
+        parsed_rows.append(new_row)
 
     if not parsed_rows:
         return pd.DataFrame()
 
     tidy = pd.DataFrame(parsed_rows)
+    # Column order: id cols then our fields
     return tidy[[*id_cols, 'Course', 'Semester', 'Year', 'Grade']]
 
-# ============= Split helpers (both modes) =============
+# ======================= Split helpers (both modes) =======================
 def _norm_col_name(s: str) -> str:
     return re.sub(r'[^a-z0-9]', '', str(s).strip().lower())
 
@@ -100,7 +152,7 @@ def _find_col_exact(df: pd.DataFrame, candidates_norm: List[str]) -> Optional[st
 
 def _find_cols_fuzzy(df: pd.DataFrame, roots: List[str]) -> List[str]:
     norm_map = {col: _norm_col_name(col) for col in df.columns}
-    cols = []
+    cols: List[str] = []
     for col, n in norm_map.items():
         if any(root in n for root in roots):
             cols.append(col)
@@ -151,9 +203,9 @@ def _is_nurs(v: str) -> bool:
     return ("NURS" in up_np) or ("NURSING" in up_np)
 
 def _is_majorless(v: str) -> bool:
-    """Treat MAJRLS/MAJORLESS/UNDECLARED/UNDECIDED (and blanks) as majorless."""
+    """Treat MAJRLS/MAJORLESS/UNDECLARED/UNDECIDED and BLANKS as majorless."""
     if v is None or (isinstance(v, float) and pd.isna(v)):
-        return True  # blank treated as majorless
+        return True
     s = str(v).strip()
     if not s or s.lower() == "nan":
         return True
@@ -161,7 +213,7 @@ def _is_majorless(v: str) -> bool:
     return ("MAJRLS" in up_np) or ("MAJORLESS" in up_np) or ("UNDECLARED" in up_np) or ("UNDECIDED" in up_np)
 
 def _aggregate_program_string(row: pd.Series, program_cols: List[str]) -> str:
-    parts = []
+    parts: List[str] = []
     for c in program_cols:
         val = row.get(c, None)
         if pd.isna(val) or str(val).strip().lower() == "nan":
@@ -184,7 +236,7 @@ def _detect_id_column(df: pd.DataFrame) -> Optional[str]:
 def _find_program_columns(df: pd.DataFrame) -> List[str]:
     # exact matches
     exact = {"major", "program", "degree", "maj", "track", "curriculum", "department"}
-    cols = []
+    cols: List[str] = []
     got = _find_col_exact(df, list(exact))
     if got:
         cols.append(got)
@@ -248,7 +300,7 @@ def _split_programs(df_like: pd.DataFrame):
 
     return pbhl_df, spth_old_df, spth_new_df, nurs_df, majorless_df, id_col, program_cols, counts
 
-# ============= UI =============
+# ======================= UI =======================
 def run():
     st.subheader("📊 Grade Data Transformer")
 
@@ -306,7 +358,7 @@ def run():
         with st.spinner("Filtering…"):
             pbhl_df, spth_old_df, spth_new_df, nurs_df, majorless_df, id_col, program_cols, counts = _split_programs(raw_df)
 
-    # Quick category counts (so you can verify PBHL/MAJRLS immediately)
+    # Category counts (quick confidence check)
     with st.container():
         st.markdown("#### Category counts")
         c1, c2, c3, c4, c5 = st.columns(5)
