@@ -7,33 +7,54 @@ from typing import Dict, List, Tuple, Optional
 
 def extract_student_meta(path: str) -> Tuple[Optional[str], Optional[str]]:
     """Return the student ID and name found on the Current Semester Advising sheet."""
+
+    def _strip(value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        value = str(value).strip()
+        return value or None
+
+    def _neighbor_value(sheet, row: int, col: int) -> Optional[str]:
+        # Prefer same-row values first so names appear next to their label.
+        for r, c in ((row, col + 1), (row + 1, col)):
+            if r <= sheet.max_row and c <= sheet.max_column:
+                val = _strip(sheet.cell(row=r, column=c).value)
+                if val:
+                    return val
+        return None
+
     try:
         wb = load_workbook(path, data_only=True)
         if "Current Semester Advising" not in wb.sheetnames:
             return None, None
         sh = wb["Current Semester Advising"]
 
-        # Student ID lives in a fixed cell across templates.
-        sid_cell = sh["C5"].value
-        sid = str(sid_cell).strip() if sid_cell is not None else None
+        sid = _strip(sh["C5"].value)
+        name = _strip(sh["C4"].value)
 
-        # Attempt to read the student name from the commonly used cell first.
-        name_cell = sh["C4"].value
-        name = str(name_cell).strip() if name_cell else None
-
-        # Fall back to label search in the upper portion of the sheet.
+        # Fall back to label search close to the header area where the metadata typically lives.
         if not name:
-            labels = {"student name", "name"}
+            local_labels = {"student name", "name"}
             for row in sh.iter_rows(min_row=1, max_row=15, max_col=10):
                 for cell in row:
                     val = cell.value
-                    if isinstance(val, str) and val.strip().lower() in labels:
-                        right = sh.cell(row=cell.row, column=cell.column + 1).value
-                        below = sh.cell(row=cell.row + 1, column=cell.column).value
-                        if right:
-                            name = str(right).strip()
-                        elif below:
-                            name = str(below).strip()
+                    if isinstance(val, str) and val.strip().lower() in local_labels:
+                        name = _neighbor_value(sh, cell.row, cell.column)
+                        if name:
+                            break
+                if name:
+                    break
+
+        # Broader sweep that only reacts to labels containing both "student" and "name".
+        if not name:
+            for row in sh.iter_rows():
+                for cell in row:
+                    val = cell.value
+                    if not isinstance(val, str):
+                        continue
+                    normalized = val.strip().lower()
+                    if "student" in normalized and "name" in normalized:
+                        name = _neighbor_value(sh, cell.row, cell.column)
                         if name:
                             break
                 if name:
@@ -96,7 +117,7 @@ def process_zip(up_zip) -> Tuple[pd.DataFrame, List[str], List[str]]:
             if not data:
                 errors.append(f"{file_name}: internship table not found")
                 continue
-            row = {"Student_ID": sid, "Student_Name": student_name or "", **data}
+            row = {"Student ID": sid, "Student Name": student_name or "", **data}
             all_rows.append(row)
             processed.append(file_name)
 
@@ -104,7 +125,7 @@ def process_zip(up_zip) -> Tuple[pd.DataFrame, List[str], List[str]]:
         return pd.DataFrame(), processed, errors
 
     df = pd.DataFrame(all_rows).fillna(0)
-    preferred = ["Student_ID", "Student_Name"]
+    preferred = ["Student ID", "Student Name"]
     cols = preferred + [c for c in df.columns if c not in preferred]
     return df[cols], processed, errors
 
