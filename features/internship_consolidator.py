@@ -2,17 +2,7 @@ import streamlit as st
 import pandas as pd
 from io import BytesIO
 import zipfile, os, tempfile
-from openpyxl import load_workbook
-from typing import Dict, List, Tuple, Optional
-
-def extract_student_id(path: str) -> Optional[str]:
-    try:
-        wb = load_workbook(path, data_only=True)
-        if "Current Semester Advising" not in wb.sheetnames: return None
-        sid = wb["Current Semester Advising"]["C5"].value
-        return str(sid).strip() if sid is not None else None
-    except Exception:
-        return None
+from typing import Dict, List, Optional, Tuple
 
 def extract_internship_data(path: str) -> Optional[Dict[str, int]]:
     try:
@@ -58,24 +48,22 @@ def process_zip(up_zip) -> Tuple[pd.DataFrame, List[str], List[str]]:
         if not excel_files:
             return pd.DataFrame(), [], ["No Excel files found in the zip."]
         for path in excel_files:
-            name = os.path.basename(path)
-            sid = extract_student_id(path)
+            file_name = os.path.basename(path)
+            student_display = os.path.splitext(file_name)[0]
             data = extract_internship_data(path)
-            if not sid:
-                errors.append(f"{name}: missing Student ID at 'Current Semester Advising'!C5")
-                continue
             if not data:
-                errors.append(f"{name}: internship table not found")
+                errors.append(f"{file_name}: internship table not found")
                 continue
-            row = {"Student_ID": sid, **data}
+            row = {"Student Name": student_display, **data}
             all_rows.append(row)
-            processed.append(name)
+            processed.append(file_name)
 
     if not all_rows:
         return pd.DataFrame(), processed, errors
 
     df = pd.DataFrame(all_rows).fillna(0)
-    cols = ["Student_ID"] + [c for c in df.columns if c != "Student_ID"]
+    preferred = ["Student Name"]
+    cols = preferred + [c for c in df.columns if c not in preferred]
     return df[cols], processed, errors
 
 def run():
