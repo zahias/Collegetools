@@ -2,67 +2,7 @@ import streamlit as st
 import pandas as pd
 from io import BytesIO
 import zipfile, os, tempfile
-from openpyxl import load_workbook
-from typing import Dict, List, Tuple, Optional
-
-def extract_student_meta(path: str) -> Tuple[Optional[str], Optional[str]]:
-    """Return the student ID and name found on the Current Semester Advising sheet."""
-
-    def _strip(value: Optional[str]) -> Optional[str]:
-        if value is None:
-            return None
-        value = str(value).strip()
-        return value or None
-
-    def _neighbor_value(sheet, row: int, col: int) -> Optional[str]:
-        # Prefer same-row values first so names appear next to their label.
-        for r, c in ((row, col + 1), (row + 1, col)):
-            if r <= sheet.max_row and c <= sheet.max_column:
-                val = _strip(sheet.cell(row=r, column=c).value)
-                if val:
-                    return val
-        return None
-
-    try:
-        wb = load_workbook(path, data_only=True)
-        if "Current Semester Advising" not in wb.sheetnames:
-            return None, None
-        sh = wb["Current Semester Advising"]
-
-        sid = _strip(sh["C5"].value)
-        name = _strip(sh["C4"].value)
-
-        # Fall back to label search close to the header area where the metadata typically lives.
-        if not name:
-            local_labels = {"student name", "name"}
-            for row in sh.iter_rows(min_row=1, max_row=15, max_col=10):
-                for cell in row:
-                    val = cell.value
-                    if isinstance(val, str) and val.strip().lower() in local_labels:
-                        name = _neighbor_value(sh, cell.row, cell.column)
-                        if name:
-                            break
-                if name:
-                    break
-
-        # Broader sweep that only reacts to labels containing both "student" and "name".
-        if not name:
-            for row in sh.iter_rows():
-                for cell in row:
-                    val = cell.value
-                    if not isinstance(val, str):
-                        continue
-                    normalized = val.strip().lower()
-                    if "student" in normalized and "name" in normalized:
-                        name = _neighbor_value(sh, cell.row, cell.column)
-                        if name:
-                            break
-                if name:
-                    break
-
-        return sid, name
-    except Exception:
-        return None, None
+from typing import Dict, List, Optional, Tuple
 
 def extract_internship_data(path: str) -> Optional[Dict[str, int]]:
     try:
@@ -109,15 +49,12 @@ def process_zip(up_zip) -> Tuple[pd.DataFrame, List[str], List[str]]:
             return pd.DataFrame(), [], ["No Excel files found in the zip."]
         for path in excel_files:
             file_name = os.path.basename(path)
-            sid, student_name = extract_student_meta(path)
+            student_display = os.path.splitext(file_name)[0]
             data = extract_internship_data(path)
-            if not sid:
-                errors.append(f"{file_name}: missing Student ID at 'Current Semester Advising'!C5")
-                continue
             if not data:
                 errors.append(f"{file_name}: internship table not found")
                 continue
-            row = {"Student ID": sid, "Student Name": student_name or "", **data}
+            row = {"Student Name": student_display, **data}
             all_rows.append(row)
             processed.append(file_name)
 
@@ -125,7 +62,7 @@ def process_zip(up_zip) -> Tuple[pd.DataFrame, List[str], List[str]]:
         return pd.DataFrame(), processed, errors
 
     df = pd.DataFrame(all_rows).fillna(0)
-    preferred = ["Student ID", "Student Name"]
+    preferred = ["Student Name"]
     cols = preferred + [c for c in df.columns if c not in preferred]
     return df[cols], processed, errors
 
