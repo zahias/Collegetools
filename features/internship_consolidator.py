@@ -5,14 +5,43 @@ import zipfile, os, tempfile
 from openpyxl import load_workbook
 from typing import Dict, List, Tuple, Optional
 
-def extract_student_id(path: str) -> Optional[str]:
+def extract_student_meta(path: str) -> Tuple[Optional[str], Optional[str]]:
+    """Return the student ID and name found on the Current Semester Advising sheet."""
     try:
         wb = load_workbook(path, data_only=True)
-        if "Current Semester Advising" not in wb.sheetnames: return None
-        sid = wb["Current Semester Advising"]["C5"].value
-        return str(sid).strip() if sid is not None else None
+        if "Current Semester Advising" not in wb.sheetnames:
+            return None, None
+        sh = wb["Current Semester Advising"]
+
+        # Student ID lives in a fixed cell across templates.
+        sid_cell = sh["C5"].value
+        sid = str(sid_cell).strip() if sid_cell is not None else None
+
+        # Attempt to read the student name from the commonly used cell first.
+        name_cell = sh["C4"].value
+        name = str(name_cell).strip() if name_cell else None
+
+        # Fall back to label search in the upper portion of the sheet.
+        if not name:
+            labels = {"student name", "name"}
+            for row in sh.iter_rows(min_row=1, max_row=15, max_col=10):
+                for cell in row:
+                    val = cell.value
+                    if isinstance(val, str) and val.strip().lower() in labels:
+                        right = sh.cell(row=cell.row, column=cell.column + 1).value
+                        below = sh.cell(row=cell.row + 1, column=cell.column).value
+                        if right:
+                            name = str(right).strip()
+                        elif below:
+                            name = str(below).strip()
+                        if name:
+                            break
+                if name:
+                    break
+
+        return sid, name
     except Exception:
-        return None
+        return None, None
 
 def extract_internship_data(path: str) -> Optional[Dict[str, int]]:
     try:
@@ -58,24 +87,25 @@ def process_zip(up_zip) -> Tuple[pd.DataFrame, List[str], List[str]]:
         if not excel_files:
             return pd.DataFrame(), [], ["No Excel files found in the zip."]
         for path in excel_files:
-            name = os.path.basename(path)
-            sid = extract_student_id(path)
+            file_name = os.path.basename(path)
+            sid, student_name = extract_student_meta(path)
             data = extract_internship_data(path)
             if not sid:
-                errors.append(f"{name}: missing Student ID at 'Current Semester Advising'!C5")
+                errors.append(f"{file_name}: missing Student ID at 'Current Semester Advising'!C5")
                 continue
             if not data:
-                errors.append(f"{name}: internship table not found")
+                errors.append(f"{file_name}: internship table not found")
                 continue
-            row = {"Student_ID": sid, **data}
+            row = {"Student_ID": sid, "Student_Name": student_name or "", **data}
             all_rows.append(row)
-            processed.append(name)
+            processed.append(file_name)
 
     if not all_rows:
         return pd.DataFrame(), processed, errors
 
     df = pd.DataFrame(all_rows).fillna(0)
-    cols = ["Student_ID"] + [c for c in df.columns if c != "Student_ID"]
+    preferred = ["Student_ID", "Student_Name"]
+    cols = preferred + [c for c in df.columns if c not in preferred]
     return df[cols], processed, errors
 
 def run():
